@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omni Live Video Demo</title>
+<style>
+  :root{
+    --ivory:#FAF9F5;--paper:#FFF;--oat:#E3DACC;--slate:#141413;
+    --clay:#D97757;--clay-d:#B85C3E;--olive:#788C5D;
+    --g100:#F0EEE6;--g300:#D1CFC5;--g500:#87867F;--g700:#3D3D3A;
+    --serif:ui-serif,Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{font:15px/1.5 var(--sans);color:var(--slate);background:var(--ivory);margin:0;padding:1rem}
+  h1{font-family:var(--serif);font-size:1.4rem;margin:.2rem 0}
+  .sub{color:var(--g700);font-size:.85rem;margin:0 0 .8rem}
+  .wrap{display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;max-width:1320px;margin:0 auto}
+  .panel{background:var(--paper);border:1px solid var(--oat);border-radius:10px;padding:.8rem}
+  video{width:100%;border-radius:8px;background:#000;aspect-ratio:16/9}
+  .ctl{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-top:.6rem}
+  select,input[type=text]{font:14px var(--sans);padding:.4rem .5rem;border:1px solid var(--g300);border-radius:6px;background:var(--paper)}
+  input[type=text]{flex:1;min-width:160px}
+  button{font:14px var(--sans);padding:.42rem .8rem;border:1px solid var(--clay-d);background:var(--clay);color:#fff;border-radius:6px;cursor:pointer}
+  button.ghost{background:var(--paper);color:var(--clay-d)}
+  button:disabled{opacity:.5;cursor:default}
+  .lbl{font-family:var(--mono);font-size:.7rem;letter-spacing:.04em;color:var(--g700);text-transform:uppercase}
+  .gauges{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:.6rem}
+  .g{background:var(--g100);border-radius:8px;padding:.5rem .6rem}
+  .g .v{font-family:var(--serif);font-size:1.5rem}
+  .tag{display:inline-block;font-family:var(--mono);font-size:.62rem;padding:.05rem .4rem;border-radius:8px;background:#E9EFE2;color:var(--olive)}
+  .tag.grow{background:#FBEDE6;color:var(--clay-d)}
+  #flash{transition:opacity .4s;opacity:0;color:var(--clay-d);font-family:var(--mono);font-size:.75rem}
+  #chat{height:230px;overflow-y:auto;display:flex;flex-direction:column;gap:.5rem;margin-top:.4rem}
+  .q{align-self:flex-end;background:var(--clay);color:#fff;border-radius:10px 10px 2px 10px;padding:.4rem .6rem;max-width:85%}
+  .a{align-self:flex-start;background:var(--g100);border-radius:10px 10px 10px 2px;padding:.4rem .6rem;max-width:92%}
+  .a b{color:var(--clay-d)}
+  .recall{border-left:3px solid var(--olive);padding-left:.4rem}
+  svg{width:100%;height:120px;display:block}
+  .legend{font-family:var(--mono);font-size:.68rem;color:var(--g500)}
+  .legend i{display:inline-block;width:1.1rem;height:.3rem;border-radius:2px;vertical-align:middle;margin:0 .25rem 0 .6rem}
+  #status{font-family:var(--mono);font-size:.72rem;color:var(--g500)}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Always-Online Streaming Video — live</h1>
+<p class="sub">Qwen3-Omni · the video streams in, you ask questions, memory stays bounded across refreshes.</p>
+
+<div class="wrap">
+  <!-- left: video + controls -->
+  <div class="panel">
+    <video id="vid" controls muted playsinline></video>
+    <div class="ctl">
+      <select id="clip"></select>
+      <span class="lbl">sampling 2 fps</span>
+      <button id="start">▶ Start session</button>
+      <button id="stop" class="ghost" disabled>■ Stop</button>
+      <span id="status">idle</span>
+    </div>
+    <div class="ctl">
+      <input id="q" type="text" placeholder="Ask about the video…">
+      <button id="ask">Ask</button>
+    </div>
+    <div class="ctl">
+      <button class="ghost preset">What is happening now?</button>
+      <button class="ghost preset">What was shown at the very beginning?</button>
+      <button class="ghost preset">Has the scene changed since the start?</button>
+    </div>
+  </div>
+
+  <!-- right: dashboard + chat -->
+  <div class="panel">
+    <div class="gauges">
+      <div class="g"><div class="lbl">GPU memory</div><div class="v" id="mem">–</div><span class="tag">constant</span></div>
+      <div class="g"><div class="lbl">Live KV blocks</div><div class="v" id="kv">–</div><span class="tag">bounded</span></div>
+      <div class="g"><div class="lbl">Tokens processed</div><div class="v" id="tok">0</div><span class="tag grow">growing</span></div>
+    </div>
+    <div class="lbl">Tokens processed vs. live KV blocks &nbsp; <span id="flash">↻ refreshed — position reset, opening retained</span></div>
+    <svg id="chart" viewBox="0 0 600 120" preserveAspectRatio="none" aria-hidden="true">
+      <polyline id="lineTok" fill="none" stroke="#D97757" stroke-width="2.5"></polyline>
+      <polyline id="lineKv" fill="none" stroke="#788C5D" stroke-width="2.5"></polyline>
+    </svg>
+    <div class="legend"><i style="background:#D97757"></i>tokens (rises)<i style="background:#788C5D"></i>KV blocks (flat)
+      &nbsp;·&nbsp; refreshes: <span id="refct">0</span> &nbsp;·&nbsp; frames sent: <span id="frames">0</span></div>
+    <div id="chat"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let ws, curA = null, series = [], maxTok = 1, refreshes = 0;
+
+async function loadClips(){
+  try{
+    const r = await fetch("/clips"); const j = await r.json();
+    $("clip").innerHTML = (j.clips||[]).map(c=>`<option>${c}</option>`).join("") || "<option>(put clips in CLIP_DIR)</option>";
+  }catch(e){ $("status").textContent = "no /clips"; }
+}
+loadClips();
+
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = ev => handle(JSON.parse(ev.data));
+  ws.onclose = () => { $("status").textContent = "disconnected"; setRunning(false); };
+  return new Promise(res => ws.onopen = res);
+}
+function setRunning(on){ $("start").disabled = on; $("stop").disabled = !on; }
+
+$("start").onclick = async () => {
+  if(!ws || ws.readyState !== 1) await connect();
+  const clip = $("clip").value;
+  series = []; maxTok = 1; refreshes = 0; $("refct").textContent = 0; $("chat").innerHTML = "";
+  $("tok").textContent = "0"; drawChart();
+  ws.send(JSON.stringify({type:"start", clip, sampling_fps:2, sink_frames:6, num_frames:10, refresh_at:2000, evs:false}));
+  const v = $("vid"); v.src = `/clip/${encodeURIComponent(clip)}`; v.currentTime = 0; v.play().catch(()=>{});
+  $("status").textContent = "streaming…"; setRunning(true);
+};
+$("stop").onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:"stop"})); $("vid").pause(); setRunning(false); $("status").textContent="stopped"; };
+
+function ask(text){ if(ws&&ws.readyState===1 && text.trim()){ addQ(text); ws.send(JSON.stringify({type:"query", text})); } }
+$("ask").onclick = () => { ask($("q").value); $("q").value=""; };
+$("q").addEventListener("keydown", e => { if(e.key==="Enter"){ ask($("q").value); $("q").value=""; }});
+document.querySelectorAll(".preset").forEach(b => b.onclick = () => ask(b.textContent));
+
+function addQ(t){ const d=document.createElement("div"); d.className="q"; d.textContent=t; $("chat").appendChild(d); $("chat").scrollTop=1e9; }
+function fmtAnswer(t){
+  // highlight (a)/(b); mark the (b) recall part
+  const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  let h = esc(t).replace(/\(a\)/g,"<b>(a)</b>");
+  const i = h.indexOf("(b)");
+  if(i>=0) h = h.slice(0,i) + `<span class="recall"><b>(b)</b>` + h.slice(i+3) + "</span>";
+  return h;
+}
+
+function handle(m){
+  switch(m.type){
+    case "started": $("status").textContent = `${m.clip} · source ${m.source_fps}fps · sampling ${m.sampling_fps}fps · ${m.n_frames} frames`; break;
+    case "frames": $("frames").textContent = `${m.sent}/${m.total}`; break;
+    case "metric":
+      if(m.gpu_mem_mb!=null) $("mem").textContent = (m.gpu_mem_mb/1024).toFixed(1)+" GB";
+      if(m.kv_alive!=null) $("kv").textContent = m.kv_alive;
+      if(m.tokens!=null){ $("tok").textContent = m.tokens.toLocaleString(); series.push({tok:m.tokens, kv:m.kv_alive||0}); maxTok=Math.max(maxTok,m.tokens); drawChart(); }
+      break;
+    case "refresh": refreshes++; $("refct").textContent=refreshes; flash(); break;
+    case "answer.start": curA=document.createElement("div"); curA.className="a"; curA._t=""; $("chat").appendChild(curA); $("chat").scrollTop=1e9; break;
+    case "answer.delta": if(curA){ curA._t+=m.text; curA.innerHTML=fmtAnswer(curA._t); $("chat").scrollTop=1e9; } break;
+    case "answer.done": if(curA){ curA._t=m.text||curA._t; curA.innerHTML=fmtAnswer(curA._t); curA=null; $("chat").scrollTop=1e9; } break;
+    case "session_done": $("status").textContent="session done"; setRunning(false); break;
+    case "error": $("status").textContent="error: "+m.msg; break;
+  }
+}
+
+function flash(){ const f=$("flash"); f.style.opacity=1; setTimeout(()=>f.style.opacity=0, 1400); }
+
+function drawChart(){
+  const W=600,H=120,n=series.length; if(n<1){ $("lineTok").setAttribute("points",""); $("lineKv").setAttribute("points",""); return; }
+  const x=i=> n<2?0:(i/(n-1))*W;
+  const yTok=v=> H-2-(v/maxTok)*(H-8);
+  const kvRef=Math.max(1, Math.max(...series.map(s=>s.kv))*4);   // scale KV so it reads flat-low
+  const yKv=v=> H-2-(v/kvRef)*(H-8);
+  $("lineTok").setAttribute("points", series.map((s,i)=>`${x(i).toFixed(1)},${yTok(s.tok).toFixed(1)}`).join(" "));
+  $("lineKv").setAttribute("points", series.map((s,i)=>`${x(i).toFixed(1)},${yKv(s.kv).toFixed(1)}`).join(" "));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+.DS_Store
+clips/*.mp4
+clips/*.mov
+clips/*.webm
+clips/*.mkv
