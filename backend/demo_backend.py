@@ -29,6 +29,7 @@ OMNI_PORT = int(os.environ.get("OMNI_PORT", "8901"))
 OMNI_LOG = os.environ.get("OMNI_LOG", "")  # omni server stdout log, for KV/epoch metrics
 CLIP_DIR = Path(os.environ.get("CLIP_DIR", "clips"))
 GPU_INDEX = os.environ.get("GPU_INDEX", "0")
+MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "1200"))  # cap the upfront read (~10 min @2fps)
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 BRIEF_SYS = (
@@ -68,7 +69,7 @@ def read_sampled(path, sampling_fps):
     src = cap.get(cv2.CAP_PROP_FPS) or 30.0
     stride = max(1, round(src / max(0.1, sampling_fps)))
     frames, i = [], 0
-    while True:
+    while len(frames) < MAX_FRAMES:
         ok, f = cap.read()
         if not ok:
             break

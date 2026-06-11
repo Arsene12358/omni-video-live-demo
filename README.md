@@ -76,6 +76,7 @@ In the UI: pick a clip → **Start session** → ask via the box or the preset b
 | `OMNI_LOG` | `server.log` | omni server stdout log (for live KV / epoch metrics) |
 | `CLIP_DIR` | `clips` | folder of demo clips |
 | `GPU_INDEX` | `0` | GPU to read memory from (the thinker GPU) |
+| `MAX_FRAMES` | `1200` | cap on frames read from a clip upfront (~10 min @2fps) |
 | `PORT` | `8800` | the demo backend port |
 
 Per-session knobs are sent from the UI: `sampling_fps` (2), `sink_frames` (6),
