@@ -108,6 +108,9 @@ function connect(){
   return new Promise(res => ws.onopen = res);
 }
 function setRunning(on){ $("start").disabled = on; $("stop").disabled = !on; }
+let asking = false;
+function setAsk(on){ asking = on; ["ask","q"].forEach(id => $(id).disabled = !on); document.querySelectorAll(".preset").forEach(b => b.disabled = !on); }
+setAsk(false);   // disabled until a session has buffered its first frames
 
 $("start").onclick = async () => {
   if(!ws || ws.readyState !== 1) await connect();
@@ -116,9 +119,9 @@ $("start").onclick = async () => {
   $("tok").textContent = "0"; drawChart();
   ws.send(JSON.stringify({type:"start", clip, sampling_fps:2, sink_frames:6, num_frames:10, refresh_at:2000, evs:false}));
   const v = $("vid"); v.src = `/clip/${encodeURIComponent(clip)}`; v.currentTime = 0; v.play().catch(()=>{});
-  $("status").textContent = "streaming…"; setRunning(true);
+  $("status").textContent = "buffering…"; setRunning(true); setAsk(false);
 };
-$("stop").onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:"stop"})); $("vid").pause(); setRunning(false); $("status").textContent="stopped"; };
+$("stop").onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:"stop"})); $("vid").pause(); setRunning(false); setAsk(false); $("status").textContent="stopped"; };
 
 function ask(text){ if(ws&&ws.readyState===1 && text.trim()){ addQ(text); ws.send(JSON.stringify({type:"query", text})); } }
 $("ask").onclick = () => { ask($("q").value); $("q").value=""; };
@@ -138,7 +141,7 @@ function fmtAnswer(t){
 function handle(m){
   switch(m.type){
     case "started": $("status").textContent = `${m.clip} · source ${m.source_fps}fps · sampling ${m.sampling_fps}fps · ${m.n_frames} frames`; break;
-    case "frames": $("frames").textContent = `${m.sent}/${m.total}`; break;
+    case "frames": $("frames").textContent = `${m.sent}/${m.total}`; if(!asking){ setAsk(true); $("status").textContent="live — ask away"; } break;
     case "metric":
       if(m.gpu_mem_mb!=null) $("mem").textContent = (m.gpu_mem_mb/1024).toFixed(1)+" GB";
       if(m.kv_alive!=null) $("kv").textContent = m.kv_alive;
@@ -148,7 +151,7 @@ function handle(m){
     case "answer.start": curA=document.createElement("div"); curA.className="a"; curA._t=""; $("chat").appendChild(curA); $("chat").scrollTop=1e9; break;
     case "answer.delta": if(curA){ curA._t+=m.text; curA.innerHTML=fmtAnswer(curA._t); $("chat").scrollTop=1e9; } break;
     case "answer.done": if(curA){ curA._t=m.text||curA._t; curA.innerHTML=fmtAnswer(curA._t); curA=null; $("chat").scrollTop=1e9; } break;
-    case "session_done": $("status").textContent="session done"; setRunning(false); break;
+    case "session_done": $("status").textContent="session done"; setRunning(false); setAsk(false); break;
     case "error": $("status").textContent="error: "+m.msg; break;
   }
 }

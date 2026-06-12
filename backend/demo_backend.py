@@ -57,8 +57,12 @@ async def clips():
 
 @app.get("/clip/{name}")
 async def clip(name: str):
-    p = (CLIP_DIR / name).resolve()
-    if CLIP_DIR.resolve() not in p.parents or not p.exists():
+    # guard traversal by name (not by resolve(), which would follow symlinked clips
+    # out of CLIP_DIR and 404 them); is_file() still follows the symlink to its target.
+    if "/" in name or "\\" in name or ".." in name:
+        return HTMLResponse("not found", status_code=404)
+    p = CLIP_DIR / name
+    if not p.is_file():
         return HTMLResponse("not found", status_code=404)
     return FileResponse(p)
 
