@@ -65,6 +65,7 @@
       <button id="ask">Ask</button>
     </div>
     <div class="ctl">
+      <button class="ghost preset" data-q="In one sentence each: (a) what is happening right now, and (b) what was shown at the very beginning?">Now + beginning (a/b)</button>
       <button class="ghost preset">What is happening now?</button>
       <button class="ghost preset">What was shown at the very beginning?</button>
       <button class="ghost preset">Has the scene changed since the start?</button>
@@ -126,7 +127,7 @@ $("stop").onclick = () => { if(ws&&ws.readyState===1) ws.send(JSON.stringify({ty
 function ask(text){ if(ws&&ws.readyState===1 && text.trim()){ addQ(text); ws.send(JSON.stringify({type:"query", text})); } }
 $("ask").onclick = () => { ask($("q").value); $("q").value=""; };
 $("q").addEventListener("keydown", e => { if(e.key==="Enter"){ ask($("q").value); $("q").value=""; }});
-document.querySelectorAll(".preset").forEach(b => b.onclick = () => ask(b.textContent));
+document.querySelectorAll(".preset").forEach(b => b.onclick = () => ask(b.dataset.q || b.textContent));
 
 function addQ(t){ const d=document.createElement("div"); d.className="q"; d.textContent=t; $("chat").appendChild(d); $("chat").scrollTop=1e9; }
 function fmtAnswer(t){

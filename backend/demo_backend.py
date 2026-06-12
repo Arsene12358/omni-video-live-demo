@@ -33,8 +33,8 @@ MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "1200"))  # cap the upfront read (
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 BRIEF_SYS = (
-    "You are a video understanding assistant. Answer in exactly two short sentences: "
-    "one for (a) and one for (b). Do not add any other text."
+    "You are a video understanding assistant. Answer concisely in one or two short "
+    "sentences. Do not add extra commentary."
 )
 _EV = re.compile(r"computed=(\d+) total_blocks=(\d+) alive=(\d+)")
 _SESS = re.compile(r"vsess-[a-f0-9]+-(\d+)")
