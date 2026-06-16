@@ -40,6 +40,8 @@ and the model's "now" stay aligned, and answers land ~1.5 s after a question.
   ```bash
   ./run_server.sh > server.log 2>&1 &   # serves on :8901, logs KV/eviction to server.log
   ```
+  For much faster answer streaming, drop `--enforce-eager` from that serve command —
+  see **Performance — enable CUDA graphs** below.
 - This backend **co-located with the omni server** (so it can read `server.log` +
   `nvidia-smi`).
 - Python 3.10+; `pip install -r backend/requirements.txt`.
@@ -58,6 +60,30 @@ OMNI_PORT=8901 OMNI_LOG=server.log CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh
 ```
 
 In the UI: pick a clip → **Start session** → ask via the box or the preset buttons.
+
+## Performance — enable CUDA graphs
+
+The omni server defaults to `--enforce-eager`, which disables CUDA graphs. At decode time — batch size 1, as in this single-stream demo — that leaves the GPU **launch-bound**: every generated token issues thousands of tiny kernels, one `cudaLaunchKernel` at a time, with idle gaps in between.
+
+**Dropping `--enforce-eager` from the omni serve command** lets vLLM capture a CUDA graph of the decode step; the same kernels then replay back-to-back via `cudaGraphLaunch` with no per-kernel launch overhead. Measured on 2×H200 (Qwen3-Omni-30B-A3B, streaming-KV eviction build):
+
+| metric | `--enforce-eager` | CUDA graphs | change |
+|--------|-------------------|-------------|--------|
+| decode throughput | ~35 tok/s | ~199 tok/s | **~5.7× faster** |
+| long answer (~300 tokens) | ~13.8 s | ~4.9 s | **~2.8× faster** |
+| time-to-first-token | ~2.8 s | ~2.7 s | unchanged\* |
+| ingest throughput | ~36 fps | ~36 fps | unchanged |
+| answer quality | — | — | unchanged |
+
+\* CUDA graphs accelerate **decode**, not prefill. First-token latency is prefill + multi-stage orchestration, so it is unchanged — the visible win is that **answers stream back ~3× faster**, most noticeably on longer responses.
+
+To enable, remove `--enforce-eager` from the omni serve command (in the vLLM-Omni example's `run_server.sh`). Notes:
+
+- vLLM captures the decode graph in well under a second at startup — there is no torch.compile / inductor step, so cold-start is unaffected.
+- The streaming-KV eviction attention backend is CUDA-graph-safe, validated end-to-end **including across position-refreshes** (the opening is still recalled after a reset).
+- Rollback is just re-adding `--enforce-eager`.
+
+An nsys timeline makes it concrete: eager shows ~360k individual kernel launches separated by gaps; CUDA graphs collapse the hot decode loop into ~15k graph replays at the **same per-kernel GPU time** — i.e. the speedup comes from eliminating the inter-kernel gaps, not from faster kernels.
 
 ## The narrative (what to show)
 
