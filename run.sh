@@ -10,5 +10,10 @@ export CLIP_DIR="${CLIP_DIR:-clips}"
 export GPU_INDEX="${GPU_INDEX:-0}"
 PORT="${PORT:-8800}"
 
+# Resolve relative paths against the invocation dir before the cd below —
+# otherwise CLIP_DIR=clips / OMNI_LOG=server.log silently resolve under backend/.
+case "$OMNI_LOG" in /*) ;; *) OMNI_LOG="$PWD/$OMNI_LOG" ;; esac
+case "$CLIP_DIR" in /*) ;; *) CLIP_DIR="$PWD/$CLIP_DIR" ;; esac
+
 cd "$(dirname "$0")/backend"
 exec uvicorn demo_backend:app --host 0.0.0.0 --port "$PORT"
