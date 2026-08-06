@@ -34,14 +34,22 @@ and the model's "now" stay aligned, and answers land ~1.5 s after a question.
 
 ## Prerequisites
 
-- A **running Qwen3-Omni omni server in persistent mode**, started with the streaming-KV
-  eviction build and logging its stdout to a file. Use the vLLM-Omni example's
-  `run_server.sh`:
+- A **running Qwen3-Omni omni server in persistent mode** on the **v0.26.0 pair**:
+  - **vLLM v0.26.0 + the streaming-KV overlay**: `pip install vllm==0.26.0`, then overlay
+    the branch's changed files from
+    [`Arsene12358/vllm@feat/streaming-kv-v026`](https://github.com/Arsene12358/vllm/tree/feat/streaming-kv-v026).
+  - **vLLM-Omni from source**:
+    [`Arsene12358/vllm-omni@feat/persistent-video-session-v026`](https://github.com/Arsene12358/vllm-omni/tree/feat/persistent-video-session-v026)
+    (`pip install -e .`).
+  - The exact install recipe (overlay snippet included) lives in that branch's example
+    README: `examples/online_serving/qwen3_omni/persistent_video_session/README.md`.
+
+  Then serve with the example's `run_server.sh`, logging stdout to a file:
   ```bash
   ./run_server.sh > server.log 2>&1 &   # serves on :8901, logs KV/eviction to server.log
   ```
-  For much faster answer streaming, drop `--enforce-eager` from that serve command —
-  see **Performance — enable CUDA graphs** below.
+  `run_server.sh` now defaults to **CUDA graphs** (the validated production config) —
+  see **Performance — CUDA graphs** below, including the constraint if you must run eager.
 - This backend **co-located with the omni server** (so it can read `server.log` +
   `nvidia-smi`).
 - Python 3.10+; `pip install -r backend/requirements.txt`.
@@ -61,27 +69,59 @@ OMNI_PORT=8901 OMNI_LOG=server.log CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh
 
 In the UI: pick a clip → **Start session** → ask via the box or the preset buttons.
 
-## Performance — enable CUDA graphs
+### Run it live on 2×H200 (computelab-aus)
 
-The omni server defaults to `--enforce-eager`, which disables CUDA graphs. At decode time — batch size 1, as in this single-stream demo — that leaves the GPU **launch-bound**: every generated token issues thousands of tiny kernels, one `cudaLaunchKernel` at a time, with idle gaps in between.
+The exact path for a live run on the validated hardware, from the
+`computelab-aus-01-frontend-01` login node:
 
-**Dropping `--enforce-eager` from the omni serve command** lets vLLM capture a CUDA graph of the decode step; the same kernels then replay back-to-back via `cudaGraphLaunch` with no per-kernel launch overhead. Measured on 2×H200 (Qwen3-Omni-30B-A3B, streaming-KV eviction build):
+```bash
+# 1) allocate 2 H200s (avoid vkg-prod-673/674-au — they die under sustained load)
+srun -p 'h200@cr+mp/None@cr+mp/8gpu-224cpu-2048gb' --gres=gpu:h200:2 \
+     -x vkg-prod-673-au,vkg-prod-674-au -t 04:00:00 --pty bash
+hostname   # note the compute node, e.g. vkg-prod-670-au — needed for the ssh -L below
 
-| metric | `--enforce-eager` | CUDA graphs | change |
-|--------|-------------------|-------------|--------|
-| decode throughput | ~35 tok/s | ~199 tok/s | **~5.7× faster** |
-| long answer (~300 tokens) | ~13.8 s | ~4.9 s | **~2.8× faster** |
-| time-to-first-token | ~2.8 s | ~2.7 s | unchanged\* |
-| ingest throughput | ~36 fps | ~36 fps | unchanged |
-| answer quality | — | — | unchanged |
+# 2) install the v0.26.0 pair (once) — see Prerequisites above:
+#    pip install vllm==0.26.0  + streaming-kv overlay  + vllm-omni fork `pip install -e .`
 
-\* CUDA graphs accelerate **decode**, not prefill. First-token latency is prefill + multi-stage orchestration, so it is unchanged — the visible win is that **answers stream back ~3× faster**, most noticeably on longer responses.
+# 3) serve (CUDA graphs default; ready in ~4 min: weights + torch.compile + capture)
+cd vllm-omni/examples/online_serving/qwen3_omni/persistent_video_session
+MODEL=Qwen/Qwen3-Omni-30B-A3B-Instruct PORT=8901 ./run_server.sh > server.log 2>&1 &
+until curl -sf localhost:8901/v1/models >/dev/null; do sleep 5; done
 
-To enable, remove `--enforce-eager` from the omni serve command (in the vLLM-Omni example's `run_server.sh`). Notes:
+# 4) demo backend (this repo), co-located with the server
+cd /path/to/omni-video-live-demo
+pip install -r backend/requirements.txt
+mkdir -p clips && cp /path/to/your_clip.mp4 clips/
+OMNI_PORT=8901 OMNI_LOG=/abs/path/to/persistent_video_session/server.log \
+  CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh &
 
-- vLLM captures the decode graph in well under a second at startup — there is no torch.compile / inductor step, so cold-start is unaffected.
+# 5) from your laptop: forward through the login node to the compute node
+ssh -L 8800:<compute-node>:8800 computelab-aus-01-frontend-01
+# then open http://localhost:8800 → pick the clip → Start session
+```
+
+## Performance — CUDA graphs (the default)
+
+The omni example's `run_server.sh` now serves **with CUDA graphs** (no `--enforce-eager`) — the validated production config on the v0.26.0 stack. Eager decode at batch size 1, as in this single-stream demo, leaves the GPU **launch-bound**: every generated token issues thousands of tiny kernels, one `cudaLaunchKernel` at a time, with idle gaps in between. CUDA graphs replay the same kernels back-to-back via `cudaGraphLaunch` with no per-kernel launch overhead.
+
+Measured on 2×H200 (Qwen3-Omni-30B-A3B, v0.26.0 + streaming-KV overlay; 800-frame session, queries every 50 frames, flood-fed):
+
+| metric | eager | CUDA graphs | change |
+|--------|-------|-------------|--------|
+| decode throughput (per-answer median) | 26.5 tok/s | **213 tok/s** | **~8× faster** |
+| session wall (800 frames + 16 answers) | ~62 s | **31.4 s** | ~2× faster |
+| ingest e2e (first frame → session done) | ~13 f/s | **25.5 f/s** | ~2× faster |
+| query cycle (50-frame ingest + answer) | 2.8–4.3 s | **~1.4 s** | ~2–3× faster |
+| server ready (cold) | 182 s | 222 s | +40 s (torch.compile ~39 s + graph capture ≤2 s/stage) |
+| answer quality / opening recall | — | — | unchanged (recall verified across refreshes) |
+
+(The numbers previously cited here — ~35 → ~199 tok/s decode, ~5.7× — were measured on the pre-port v0.20-era branch; same mechanism, different stack.)
+
+Notes:
+
+- On v0.26 the graph path goes through torch.compile, so cold start pays ~40 s extra once per server start; decode then runs ~8× faster.
 - The streaming-KV eviction attention backend is CUDA-graph-safe, validated end-to-end **including across position-refreshes** (the opening is still recalled after a reset).
-- Rollback is just re-adding `--enforce-eager`.
+- **If you must run eager**: eager + the default async scheduling wedges persistent streaming sessions. Set `async_scheduling: false` on stages 0/1 **through a deploy config** (`--deploy-config your.yaml`) — the `--no-async-scheduling` CLI flag is *not* sufficient. See the example README's Troubleshooting section.
 
 An nsys timeline makes it concrete: eager shows ~360k individual kernel launches separated by gaps; CUDA graphs collapse the hot decode loop into ~15k graph replays at the **same per-kernel GPU time** — i.e. the speedup comes from eliminating the inter-kernel gaps, not from faster kernels.
 
