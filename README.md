@@ -61,18 +61,22 @@ and the model's "now" stay aligned, and answers land ~1.5 s after a question.
 pip install -r backend/requirements.txt
 mkdir -p clips && cp /path/to/your_clip.mp4 clips/         # clips are git-ignored
 
-OMNI_PORT=8901 OMNI_LOG=server.log CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh
+OMNI_PORT=8901 OMNI_LOG=/abs/path/to/persistent_video_session/server.log \
+  CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh
 # then, from your laptop:
 #   ssh -L 8800:localhost:8800 <demo-box>     # port-forward
 #   open http://localhost:8800
 ```
 
+`OMNI_LOG` is the absolute path to the omni server's log, wherever you started it — the
+backend tails that file for the live KV numbers, so pointing it at this repo's directory
+leaves the dashboard dark.
+
 In the UI: pick a clip → **Start session** → ask via the box or the preset buttons.
 
 ### Run it live on 2×H200 (computelab-aus)
 
-The exact path for a live run on the validated hardware, from the
-`computelab-aus-01-frontend-01` login node:
+The exact path for a live run on the validated hardware, from the `computelab-aus-01-frontend-01` login node:
 
 ```bash
 # 1) allocate 2 H200s (avoid vkg-prod-673/674-au — they die under sustained load)
@@ -80,19 +84,37 @@ srun -p 'h200@cr+mp/None@cr+mp/8gpu-224cpu-2048gb' --gres=gpu:h200:2 \
      -x vkg-prod-673-au,vkg-prod-674-au -t 04:00:00 --pty bash
 hostname   # note the compute node, e.g. vkg-prod-670-au — needed for the ssh -L below
 
-# 2) install the v0.26.0 pair (once) — see Prerequisites above:
-#    pip install vllm==0.26.0  + streaming-kv overlay  + vllm-omni fork `pip install -e .`
+# 2) get the code + install the v0.26.0 pair (once) — see Prerequisites above
+WORK=$PWD
+git clone -b feat/persistent-video-session-v026 \
+    https://github.com/Arsene12358/vllm-omni.git
+git clone https://github.com/Arsene12358/omni-video-live-demo.git
+pip install vllm==0.26.0        # then overlay Arsene12358/vllm@feat/streaming-kv-v026
+pip install -e "$WORK/vllm-omni"
 
 # 3) serve (CUDA graphs default; ready in ~4 min: weights + torch.compile + capture)
-cd vllm-omni/examples/online_serving/qwen3_omni/persistent_video_session
+SERVE_DIR="$WORK/vllm-omni/examples/online_serving/qwen3_omni/persistent_video_session"
+cd "$SERVE_DIR"
 MODEL=Qwen/Qwen3-Omni-30B-A3B-Instruct PORT=8901 ./run_server.sh > server.log 2>&1 &
-until curl -sf localhost:8901/v1/models >/dev/null; do sleep 5; done
+server_pid=$!
+# Ready == /v1/models answers 200 AND its `data` array is non-empty: a bare 200 can
+# land before the model is registered. Bounded at 10 min, loud if the server dies.
+ready=""
+for _ in $(seq 1 120); do
+  kill -0 "$server_pid" 2>/dev/null || { echo "omni server exited during startup:"; tail -40 server.log; break; }
+  if curl -sf localhost:8901/v1/models 2>/dev/null \
+     | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("data") else 1)' 2>/dev/null; then
+    ready=1; break
+  fi
+  sleep 5
+done
+[ -n "$ready" ] || { echo "omni server not ready — check $SERVE_DIR/server.log"; }
 
 # 4) demo backend (this repo), co-located with the server
-cd /path/to/omni-video-live-demo
+cd "$WORK/omni-video-live-demo"
 pip install -r backend/requirements.txt
 mkdir -p clips && cp /path/to/your_clip.mp4 clips/
-OMNI_PORT=8901 OMNI_LOG=/abs/path/to/persistent_video_session/server.log \
+OMNI_PORT=8901 OMNI_LOG="$SERVE_DIR/server.log" \
   CLIP_DIR=clips GPU_INDEX=0 PORT=8800 ./run.sh &
 
 # 5) from your laptop: forward through the login node to the compute node
