@@ -38,6 +38,8 @@ BRIEF_SYS = (
 )
 _EV = re.compile(r"computed=(\d+) total_blocks=(\d+) alive=(\d+)")
 _SESS = re.compile(r"vsess-[a-f0-9]+-(\d+)")
+# FROZEN: "[streaming-kv] rebase req=%s delta=%d new_base=%d recent_tokens=%d"
+_REBASE = re.compile(r"\[streaming-kv\] rebase req=(\S+) delta=(\d+) new_base=(\d+) recent_tokens=(\d+)")
 
 app = FastAPI()
 
@@ -97,24 +99,33 @@ def gpu_mem_mb():
         return None
 
 
-def read_kv():
-    """Return (tokens_computed, kv_alive, epoch) from the tail of the omni log."""
-    if not OMNI_LOG or not os.path.exists(OMNI_LOG):
-        return None, None, None
-    try:
-        with open(OMNI_LOG, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - 65536))
-            tail = fh.read().decode("utf-8", "ignore")
-    except Exception:
-        return None, None, None
+def parse_kv_tail(tail):
+    """Pure parse of a server-log tail -> (tokens_computed, kv_alive, epoch, rebases).
+
+    epoch steps with new vsess-<hex>-<epoch>[-<stagehex>] ids (refresh mode); rebases
+    counts "[streaming-kv] rebase ..." lines (engine-rebase mode, id pinned at epoch 0).
+    """
     comp = al = ep = None
     for m in _EV.finditer(tail):
         comp, al = int(m.group(1)), int(m.group(3))
     eps = _SESS.findall(tail)
     if eps:
         ep = max(int(e) for e in eps)
-    return comp, al, ep
+    return comp, al, ep, len(_REBASE.findall(tail))
+
+
+def read_kv():
+    """Return (tokens_computed, kv_alive, epoch, rebases) from the tail of the omni log."""
+    if not OMNI_LOG or not os.path.exists(OMNI_LOG):
+        return None, None, None, None
+    try:
+        with open(OMNI_LOG, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 65536))
+            tail = fh.read().decode("utf-8", "ignore")
+    except Exception:
+        return None, None, None, None
+    return parse_kv_tail(tail)
 
 
 async def streamer(browser, omni, frames, sampling_fps):
@@ -148,9 +159,9 @@ async def reader(browser, omni):
 
 
 async def metrics(browser):
-    seen_epoch, prev_comp, offset = -1, 0, 0
+    seen_epoch, prev_comp, offset, prev_rebases = -1, 0, 0, None
     while True:
-        comp, al, ep = await asyncio.to_thread(read_kv)
+        comp, al, ep, rb = await asyncio.to_thread(read_kv)
         mem = await asyncio.to_thread(gpu_mem_mb)
         tokens = None
         if comp is not None:
@@ -163,6 +174,13 @@ async def metrics(browser):
             if seen_epoch >= 0:
                 await browser.send_json({"type": "refresh", "epoch": ep})
             seen_epoch = ep
+        if rb is not None:
+            # engine-rebase mode: no epoch bumps; in-tail rebase-line count rising is the
+            # signal. Compare to the previous poll (not a high-water mark) so lines that
+            # scroll out of the 64 KiB tail re-arm detection; first poll only baselines.
+            if prev_rebases is not None and rb > prev_rebases:
+                await browser.send_json({"type": "refresh", "epoch": ep})
+            prev_rebases = rb
         await asyncio.sleep(1.0)
 
 
