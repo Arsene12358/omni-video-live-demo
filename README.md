@@ -147,6 +147,8 @@ Notes:
 
 An nsys timeline makes it concrete: eager shows ~360k individual kernel launches separated by gaps; CUDA graphs collapse the hot decode loop into ~15k graph replays at the **same per-kernel GPU time** — i.e. the speedup comes from eliminating the inter-kernel gaps, not from faster kernels.
 
+**Engine-rebase mode (unbounded sessions) costs nothing at steady state.** The demo also works against the engine-rebase variant of the persistent session (`engine_rebase: true` from the client + `--streaming-kv-rebase-at` on the server; see the example README's "Two boundedness modes"): the engine rebases M-RoPE positions in place, one request runs for the whole session, and the dashboard flashes **↻ position rebase/refresh — opening retained** on each event just like a refresh. Measured on the same 2×H200 stack: per-answer median decode is **221.5 tok/s** in rebase mode vs the 213 tok/s refresh baseline (unchanged within noise), and the rebase event itself costs **~7.7–7.8 ms** once per ~38,400 positions (~28 min of 2 fps video). Four concurrent rebase sessions on one server (`--max-num-seqs 4`) each held a flat KV band and recalled their own opening across 16 rebases apiece.
+
 ## The narrative (what to show)
 
 1. Start the clip — note the memory-gauge baseline.
