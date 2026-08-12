@@ -69,6 +69,27 @@ async def clip(name: str):
     return FileResponse(p)
 
 
+def build_session_config(msg):
+    """Pure: the browser's "start" message -> the omni server's session.config.
+
+    `engine_rebase` (the UI checkbox) hands boundedness to the engine's
+    --streaming-kv-rebase-at: one request for the whole session, no driver-side
+    refresh. `refresh_at_position` is then meaningless, and the server logs a
+    warning if it is set anyway, so it is omitted in that mode.
+    """
+    engine_rebase = bool(msg.get("engine_rebase", False))
+    cfg = {
+        "type": "session.config", "modalities": ["text"], "persistent": True,
+        "sink_frames": int(msg.get("sink_frames", 6)), "num_frames": int(msg.get("num_frames", 10)),
+        "enable_frame_filter": bool(msg.get("evs", False)),
+        "engine_rebase": engine_rebase,
+        "system_prompt": BRIEF_SYS,
+    }
+    if not engine_rebase:
+        cfg["refresh_at_position"] = int(msg.get("refresh_at", 2000))
+    return cfg
+
+
 def read_sampled(path, sampling_fps):
     """Uniform-stride sample a clip to `sampling_fps`; return (jpeg-b64 frames, source_fps)."""
     cap = cv2.VideoCapture(str(path))
@@ -220,13 +241,7 @@ async def ws(browser: WebSocket):
                 })
                 uri = f"ws://{OMNI_HOST}:{OMNI_PORT}/v1/video/chat/stream"
                 omni = await websockets.connect(uri, max_size=64 * 1024 * 1024)
-                await omni.send(json.dumps({
-                    "type": "session.config", "modalities": ["text"], "persistent": True,
-                    "sink_frames": int(msg.get("sink_frames", 6)), "num_frames": int(msg.get("num_frames", 10)),
-                    "refresh_at_position": int(msg.get("refresh_at", 2000)),
-                    "enable_frame_filter": bool(msg.get("evs", False)),
-                    "system_prompt": BRIEF_SYS,
-                }))
+                await omni.send(json.dumps(build_session_config(msg)))
                 tasks = [
                     asyncio.create_task(streamer(browser, omni, frames, sampling_fps)),
                     asyncio.create_task(reader(browser, omni)),

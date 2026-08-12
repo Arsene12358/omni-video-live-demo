@@ -42,6 +42,7 @@
   .legend{font-family:var(--mono);font-size:.68rem;color:var(--g500)}
   .legend i{display:inline-block;width:1.1rem;height:.3rem;border-radius:2px;vertical-align:middle;margin:0 .25rem 0 .6rem}
   #status{font-family:var(--mono);font-size:.72rem;color:var(--g500)}
+  .opt{font-family:var(--mono);font-size:.72rem;color:var(--g700);display:flex;align-items:center;gap:.35rem}
   @media(max-width:880px){.wrap{grid-template-columns:1fr}}
 </style>
 </head>
@@ -70,6 +71,9 @@
       <button class="ghost preset">What was shown at the very beginning?</button>
       <button class="ghost preset">Has the scene changed since the start?</button>
     </div>
+    <div class="ctl">
+      <label class="opt"><input id="rebase" type="checkbox"> engine rebase (unbounded)</label>
+    </div>
   </div>
 
   <!-- right: dashboard + chat -->
@@ -85,7 +89,7 @@
       <polyline id="lineKv" fill="none" stroke="#788C5D" stroke-width="2.5"></polyline>
     </svg>
     <div class="legend"><i style="background:#D97757"></i>tokens (rises)<i style="background:#788C5D"></i>KV blocks (flat)
-      &nbsp;·&nbsp; refreshes: <span id="refct">0</span> &nbsp;·&nbsp; frames sent: <span id="frames">0</span></div>
+      &nbsp;·&nbsp; position resets: <span id="refct">0</span> &nbsp;·&nbsp; frames sent: <span id="frames">0</span></div>
     <div id="chat"></div>
   </div>
 </div>
@@ -118,7 +122,8 @@ $("start").onclick = async () => {
   const clip = $("clip").value;
   series = []; maxTok = 1; refreshes = 0; $("refct").textContent = 0; $("chat").innerHTML = "";
   $("tok").textContent = "0"; drawChart();
-  ws.send(JSON.stringify({type:"start", clip, sampling_fps:2, sink_frames:6, num_frames:10, refresh_at:2000, evs:false}));
+  ws.send(JSON.stringify({type:"start", clip, sampling_fps:2, sink_frames:6, num_frames:10, refresh_at:2000, evs:false,
+                          engine_rebase: $("rebase").checked}));
   const v = $("vid"); v.src = `/clip/${encodeURIComponent(clip)}`; v.currentTime = 0; v.play().catch(()=>{});
   $("status").textContent = "buffering…"; setRunning(true); setAsk(false);
 };

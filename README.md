@@ -37,10 +37,16 @@ and the model's "now" stay aligned, and answers land ~1.5 s after a question.
 - A **running Qwen3-Omni omni server in persistent mode** on the **v0.26.0 pair**:
   - **vLLM v0.26.0 + the streaming-KV overlay**: `pip install vllm==0.26.0`, then overlay
     the branch's changed files from
-    [`Arsene12358/vllm@feat/streaming-kv-v026`](https://github.com/Arsene12358/vllm/tree/feat/streaming-kv-v026).
+    [`Arsene12358/vllm@feat/streaming-kv-rebase-v026`](https://github.com/Arsene12358/vllm/tree/feat/streaming-kv-rebase-v026).
   - **vLLM-Omni from source**:
-    [`Arsene12358/vllm-omni@feat/persistent-video-session-v026`](https://github.com/Arsene12358/vllm-omni/tree/feat/persistent-video-session-v026)
+    [`Arsene12358/vllm-omni@feat/persistent-rebase-v026`](https://github.com/Arsene12358/vllm-omni/tree/feat/persistent-rebase-v026)
     (`pip install -e .`).
+  - Those are the **rebase** branches, and each is a strict superset of the migration
+    branch it grew from (`feat/streaming-kv-v026` / `feat/persistent-video-session-v026`
+    are ancestors of them) — so refresh mode behaves exactly as before, and the
+    **engine rebase (unbounded)** checkbox additionally works. Serve with
+    `--streaming-kv-rebase-at` to use it (see the example README's "Two boundedness
+    modes"); without that flag, leave the checkbox off.
   - The exact install recipe (overlay snippet included) lives in that branch's example
     README: `examples/online_serving/qwen3_omni/persistent_video_session/README.md`.
 
@@ -86,10 +92,10 @@ hostname   # note the compute node, e.g. vkg-prod-670-au — needed for the ssh 
 
 # 2) get the code + install the v0.26.0 pair (once) — see Prerequisites above
 WORK=$PWD
-git clone -b feat/persistent-video-session-v026 \
+git clone -b feat/persistent-rebase-v026 \
     https://github.com/Arsene12358/vllm-omni.git
 git clone https://github.com/Arsene12358/omni-video-live-demo.git
-pip install vllm==0.26.0        # then overlay Arsene12358/vllm@feat/streaming-kv-v026
+pip install vllm==0.26.0        # then overlay Arsene12358/vllm@feat/streaming-kv-rebase-v026
 pip install -e "$WORK/vllm-omni"
 
 # 3) serve (CUDA graphs default; ready in ~4 min: weights + torch.compile + capture)
@@ -147,16 +153,17 @@ Notes:
 
 An nsys timeline makes it concrete: eager shows ~360k individual kernel launches separated by gaps; CUDA graphs collapse the hot decode loop into ~15k graph replays at the **same per-kernel GPU time** — i.e. the speedup comes from eliminating the inter-kernel gaps, not from faster kernels.
 
-**Engine-rebase mode (unbounded sessions) costs nothing at steady state.** The demo also works against the engine-rebase variant of the persistent session (`engine_rebase: true` from the client + `--streaming-kv-rebase-at` on the server; see the example README's "Two boundedness modes"): the engine rebases M-RoPE positions in place, one request runs for the whole session, and the dashboard flashes **↻ position rebase/refresh — opening retained** on each event just like a refresh. Measured on the same 2×H200 stack: per-answer median decode is **221.5 tok/s** in rebase mode vs the 213 tok/s refresh baseline (unchanged within noise), and the rebase event itself costs **~7.7–7.8 ms** once per ~38,400 positions (~28 min of 2 fps video). Four concurrent rebase sessions on one server (`--max-num-seqs 4`) each held a flat KV band and recalled their own opening across 16 rebases apiece.
+**Engine-rebase mode (unbounded sessions) costs nothing at steady state.** Tick **engine rebase (unbounded)** before **Start session** (the backend then sends `engine_rebase: true` and drops `refresh_at_position`) and serve with `--streaming-kv-rebase-at` (see the example README's "Two boundedness modes"): the engine rebases M-RoPE positions in place, one request runs for the whole session, and the dashboard flashes **↻ position rebase/refresh — opening retained** on each event just like a refresh. Measured on the same 2×H200 stack: per-answer median decode is **221.5 tok/s** in rebase mode vs the 213 tok/s refresh baseline (unchanged within noise), and the rebase event itself costs **~7.7–7.8 ms** once per ~38,400 positions at the shipped production geometry (sinks 2,560 / recent window 8,192 / `--streaming-kv-rebase-at 49152`) — **~14 min of 2 fps video** on a live-paced feed (measured cadence 833–843 s across 8 events; the ~28 min figure assumed the 2-frame/item floor, which a live feed does not reach). Four concurrent rebase sessions on one server (`--max-num-seqs 4`) each held a flat KV band and recalled their own opening across 16 rebases apiece.
 
 ## The narrative (what to show)
 
 1. Start the clip — note the memory-gauge baseline.
 2. ~30 s in: **"What is happening now?"** → it nails the current scene.
 3. Let it run; the scene changes; point at **tokens climbing while memory stays flat**;
-   a **↻ refresh** flashes → "it just reset its rotary position."
-4. Minutes in, after the scene moved on and survived refreshes: **"What was shown at the
-   very beginning?"** → it recalls the opening. The payoff.
+   a **↻ position reset** flashes → "it just reset its rotary position" (a driver-side
+   refresh, or an engine-side rebase if the checkbox is on — same flash, same payoff).
+4. Minutes in, after the scene moved on and survived position resets: **"What was shown
+   at the very beginning?"** → it recalls the opening. The payoff.
 
 ## Configuration (env)
 
@@ -170,7 +177,11 @@ An nsys timeline makes it concrete: eager shows ~360k individual kernel launches
 | `PORT` | `8800` | the demo backend port |
 
 Per-session knobs are sent from the UI: `sampling_fps` (2), `sink_frames` (6),
-`num_frames` (10), `refresh_at` (2000), `evs` (off).
+`num_frames` (10), `refresh_at` (2000), `evs` (off), `engine_rebase` (off).
+
+| UI knob | default | meaning |
+|-----|---------|---------|
+| **engine rebase (unbounded)** checkbox | off | on → the start message carries `engine_rebase: true` and **omits** `refresh_at_position`: the engine's `--streaming-kv-rebase-at` keeps positions bounded, so one request serves the whole session and the driver never re-seeds. Requires a server started with that flag. Off → the shipped driver-side refresh at `refresh_at`. |
 
 ## MVP limitations / notes
 

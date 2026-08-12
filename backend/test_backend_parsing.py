@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pure-parsing tests for demo_backend's server-log telemetry. No server needed.
+"""Pure tests for demo_backend: server-log telemetry + session-config passthrough.
+No server needed.
 
 Samples are byte-exact server-log lines from the migration validation evidence
-(~/Vault/streaming-v026-migration/validation, S2/S5 runs of 2026-08-05), plus the
-FROZEN rebase contract:
+(~/Vault/streaming-v026-migration/validation, S2/S5 runs of 2026-08-05) and from
+the unbounded-streaming V3 wave (~/Vault/streaming-unbounded/validation/v3), so
+they carry the FROZEN rebase contract as the engine actually emits it:
 
   "[streaming-kv] rebase req=%s delta=%d new_base=%d recent_tokens=%d"
 
 Run: pytest backend/test_backend_parsing.py
 """
-from demo_backend import _EV, _REBASE, _SESS, parse_kv_tail
+from demo_backend import _EV, _REBASE, _SESS, build_session_config, parse_kv_tail
 
 # --- byte-exact evidence lines ------------------------------------------------
 # S5 demo run (validation/s5/s5-summary.md): two consecutive eviction lines.
@@ -43,12 +45,15 @@ S2_EPOCH1_STATS = (
     "(APIServer pid=340339) INFO 08-05 12:42:59 [stats.py:791] "
     "[RequestE2EStats [request_id=vsess-426813f1-1-a995d2f7]]"
 )
-# FROZEN rebase contract rendered with a realistic engine-rebase request id
-# (epoch pinned at 0; the id never steps) inside the usual server-log framing.
+# Real engine-rebase line from the V3 multi-stream wave
+# (~/Vault/streaming-unbounded/validation/v3/real1/child-62252736-job393802516.txt:1957),
+# minus the srun task prefix that run captured it under — the demo reads the
+# server's own stdout log, which carries no such prefix. Epoch pinned at 0: in
+# engine-rebase mode the request id never steps.
 REBASE_LINE = (
-    "(StageEngineCoreProc_stage0_replica0 pid=694365) INFO 08-05 21:30:00 "
-    "[streaming_rebase.py:378] [streaming-kv] rebase req=vsess-58e8b2cd-0-9fb85dfd "
-    "delta=45056 new_base=4096 recent_tokens=8192"
+    "(StageEngineCoreProc_stage0_replica0 pid=597052) INFO 08-11 19:21:59 "
+    "[streaming_rebase.py:452] [streaming-kv] rebase req=vsess-ad5f9994-0-8362cd2d "
+    "delta=5500 new_base=640 recent_tokens=2046"
 )
 
 
@@ -56,10 +61,10 @@ REBASE_LINE = (
 def test_rebase_line_fields():
     m = _REBASE.search(REBASE_LINE)
     assert m is not None
-    assert m.group(1) == "vsess-58e8b2cd-0-9fb85dfd"  # req
-    assert m.group(2) == "45056"  # delta
-    assert m.group(3) == "4096"  # new_base
-    assert m.group(4) == "8192"  # recent_tokens
+    assert m.group(1) == "vsess-ad5f9994-0-8362cd2d"  # req
+    assert m.group(2) == "5500"  # delta
+    assert m.group(3) == "640"  # new_base (tiny-R wave geometry: start_size 640)
+    assert m.group(4) == "2046"  # recent_tokens
 
 
 def test_rebase_count_increments():
@@ -123,3 +128,48 @@ def test_mixed_refresh_mode_unaffected():
 
 def test_empty_tail():
     assert parse_kv_tail("") == (None, None, None, 0)
+
+
+# --- (e) session.config passthrough: the engine-rebase checkbox ---------------
+_START = {"type": "start", "clip": "c.mp4", "sampling_fps": 2, "sink_frames": 6,
+          "num_frames": 10, "refresh_at": 2000, "evs": False}
+
+
+def test_refresh_mode_config_unchanged():
+    """Checkbox off (or absent): the shipped driver-side refresh payload."""
+    for msg in (_START, {**_START, "engine_rebase": False}):
+        cfg = build_session_config(msg)
+        assert cfg["persistent"] is True
+        assert cfg["engine_rebase"] is False
+        assert cfg["refresh_at_position"] == 2000
+        assert cfg["sink_frames"] == 6 and cfg["num_frames"] == 10
+        assert cfg["enable_frame_filter"] is False
+
+
+def test_engine_rebase_mode_omits_refresh_at_position():
+    """Checkbox on: the engine owns boundedness, so refresh_at_position is not
+    just unused but omitted — the server warns when it is set alongside
+    engine_rebase, and a warning in the demo log reads like a misconfiguration."""
+    cfg = build_session_config({**_START, "engine_rebase": True})
+    assert cfg["engine_rebase"] is True
+    assert "refresh_at_position" not in cfg
+    # Everything else is the same session as refresh mode.
+    assert cfg["persistent"] is True
+    assert cfg["sink_frames"] == 6 and cfg["num_frames"] == 10
+
+
+def test_ui_knobs_are_forwarded_in_both_modes():
+    for rebase in (False, True):
+        cfg = build_session_config(
+            {**_START, "engine_rebase": rebase, "sink_frames": 0, "num_frames": 4, "evs": True}
+        )
+        assert cfg["sink_frames"] == 0
+        assert cfg["num_frames"] == 4
+        assert cfg["enable_frame_filter"] is True
+
+
+def test_config_defaults_when_the_browser_omits_knobs():
+    cfg = build_session_config({"type": "start", "clip": "c.mp4"})
+    assert (cfg["sink_frames"], cfg["num_frames"]) == (6, 10)
+    assert cfg["refresh_at_position"] == 2000
+    assert cfg["engine_rebase"] is False
